@@ -1,0 +1,823 @@
+/**
+ * JSFX Name: roof_control
+ * Author: Ilya Kuznetsov
+ * Version: 0.9
+ * License: MIT
+ * * Description: Headphone correction and mix-checking tool.
+ * Includes algorithms from:
+ * - Airwindows Monitoring 3 by Chris Johnson (MIT)
+ * - libbs2b by Boris Mikhaylov (MIT)
+ * * MIT License
+ * Copyright (c) 2026 Ilya
+ * * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ * * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+desc: roof|control
+options:gmem=roof_mem
+
+// --- ГРАФИЧЕСКИЕ РЕСУРСЫ ---
+filename:0,roof_control/gui/background.png
+filename:1,roof_control/gui/vinyl.png
+filename:2,roof_control/gui/cubes.png
+filename:3,roof_control/gui/main.png
+filename:4,roof_control/gui/sub.png
+filename:5,roof_control/gui/slew.png
+filename:6,roof_control/gui/smartphone.png
+filename:7,roof_control/gui/config.png
+filename:8,roof_control/gui/vinyl_on.png
+filename:9,roof_control/gui/cubes_on.png
+filename:10,roof_control/gui/main_on.png
+filename:11,roof_control/gui/sub_on.png
+filename:12,roof_control/gui/slew_on.png
+filename:13,roof_control/gui/smartphone_on.png
+filename:14,roof_control/gui/fullrange.png
+filename:15,roof_control/gui/fullrange_select.png
+filename:16,roof_control/gui/fullrange_on.png
+filename:17,roof_control/gui/background_dark.png
+filename:18,roof_control/gui/bypass.png
+filename:19,roof_control/gui/bypass_select.png
+
+slider1:0<0,1,1{off,on}>-bypass
+//slider2:0<-20,20,0.1>-bypass gain (dB)
+slider3:0<0,5,1{main,subwoofer,transient monitor,auracube,smartphone,vinyl,fullrange}>-mode
+// slider4 was destroyed :)
+slider5:0<0,1,1{on, off}>-stereo crossfeed (bs2b)
+slider6:700<300,1200,1>-crossfeed cutoff (Hz)
+slider7:4.5<1.0,10.0,0.1>-crossfeed suppression (dB)
+slider8:0<0,1000,1>-hp_index (hidden)
+slider9:0<0,0.7,0.01>-crossfeed delay (ms)
+slider10:0<0,1,1{on, off}>-phones correction
+slider11:0<-12,12,0.1>-preamp gain (dB)
+
+@init
+// --- ПУТИ ---
+#db_path = "roof_control/hp.db";
+#preset_dir = "roof_control/phones_eq/";
+
+// --- РАСПРЕДЕЛЕНИЕ ПАМЯТИ ---
+mem_aura_f = 0;   
+mem_aura_s = 200;
+mem_subs_L = 600;  
+mem_subs_R = 700;
+mem_hp_f   = 1000; 
+mem_hp_s   = 2000;
+gfx_states = 10000; 
+num_layers = 9;
+
+mem_fullrange_f = 40000; // Выделим место в памяти под фильтр
+// И переменные состояния (state)
+fr_sL1 = fr_sL2 = fr_sR1 = fr_sR2 = 0;
+
+gmem[3] = slider3;
+last_mode = slider3;
+
+// --- CROSSFEED DELAY BUFFER ---
+cf_bufsize = 1024; // степень двойки!
+cf_bufmask = cf_bufsize - 1;
+
+cf_bufL = 30000;
+cf_bufR = cf_bufL + cf_bufsize;
+
+cf_writepos = 0;
+
+#hp_preset_name = "";
+#current_fn = ""; 
+
+b_gain = 0.31622776601683793319988935444327;
+p_gain;
+scroll_pos = 0;
+scroll_dir = 1;
+last_scroll_time = time_precise();
+//gfx_ext_retina = 1;
+canvas_w = 1280; canvas_h = 698;
+is_config_open = 0;
+sl_trim = 2.302585092994045684;
+hp_need_reload = 1;
+fade_state = 0; //0:nofade 1:fadeout 2:switchmode 3:fadein
+fade = 1;
+fade_step = 0.025;
+mode = slider3;
+active_slider = 0;
+
+function save_profile()
+(
+  gmem[0] = 3;
+  gmem[1] = slider11;
+
+  i = 0;
+  loop(256,
+    ch = str_getchar(#current_fn, i);
+    gmem[10 + i] = ch;
+    ch == 0 ? break;
+    i += 1;
+  );
+);
+
+function cf_read(buf, pos, delay_int, delay_frac)
+(
+  idx1 = (pos - delay_int) & cf_bufmask;
+  idx2 = (idx1 - 1) & cf_bufmask;
+  s1 = buf[idx1];
+  s2 = buf[idx2];
+  s1 + (s2 - s1) * delay_frac;
+);
+
+function reset_states()
+(
+  memset(mem_aura_s, 0, 400);
+  memset(mem_subs_L, 0, 100);
+  memset(mem_subs_R, 0, 100);
+  memset(mem_hp_s, 0, 2048);
+  ph_sL1 = ph_sL2 = ph_sR1 = ph_sR2 = 0;
+  vi_sL1 = vi_sL2 = vi_sR1 = vi_sR2 = 0;
+  sl_lastL = sl_lastR = 0;
+  loL = loR = hiL = hiR = asisL = asisR = 0;
+  memset(cf_bufL, 0, cf_bufsize * 2);
+  cf_writepos = 0;
+  fr_sL1 = fr_sL2 = fr_sR1 = fr_sR2 = 0;
+);
+
+function setup_biquad_to_mem(mem_base, idx, f, g, q, type)
+(
+  f = max(1, min(f, srate * 0.49)); 
+  q = max(0.001, q);
+  w0 = 2 * $pi * f / srate; 
+  cosw = cos(w0); 
+  sinw = sin(w0);
+
+  type == 0 ? ( // PEAK
+    A = sqrt(10^(g/20));
+    alpha = sinw / (2 * q);
+    
+    b0 = 1 + alpha * A; b1 = -2 * cosw; b2 = 1 - alpha * A;
+    a0 = 1 + alpha / A; a1 = -2 * cosw; a2 = 1 - alpha / A;
+  ) : 
+  (type == 1 || type == 2) ? ( // SHELVING (1: Low / 2: High)
+    A = 10^(g/40);
+    // Эталонная альфа для шельфа
+    alpha = (sinw / 2) * sqrt( (A + 1/A) * (1/q - 1) + 2 );
+    type == 1 ? ( // LOW SHELF
+      b0 = A*((A+1)-(A-1)*cosw+2*sqrt(A)*alpha); 
+      b1 = 2*A*((A-1)-(A+1)*cosw); 
+      b2 = A*((A+1)-(A-1)*cosw-2*sqrt(A)*alpha);
+      a0 = (A+1)+(A-1)*cosw+2*sqrt(A)*alpha; 
+      a1 = -2*((A-1)+(A+1)*cosw); 
+      a2 = (A+1)+(A-1)*cosw-2*sqrt(A)*alpha;
+    ) : ( // HIGH SHELF
+      b0 = A*((A+1)+(A-1)*cosw+2*sqrt(A)*alpha); 
+      b1 = -2*A*((A-1)+(A+1)*cosw); 
+      b2 = A*((A+1)+(A-1)*cosw-2*sqrt(A)*alpha);
+      a0 = (A+1)-(A-1)*cosw+2*sqrt(A)*alpha; 
+      a1 = 2*((A-1)-(A+1)*cosw); 
+      a2 = (A+1)-(A-1)*cosw-2*sqrt(A)*alpha;
+    );
+  ) : ( // PASS FILTERS (3: HP / 4: LP)
+    alpha = sinw / (2 * q);
+    type == 3 ? ( // HPF
+      b0 = (1 + cosw) / 2; b1 = -(1 + cosw); b2 = (1 + cosw) / 2;
+      a0 = 1 + alpha; a1 = -2 * cosw; a2 = 1 - alpha;
+    ) : ( // LPF
+      b0 = (1 - cosw) / 2; b1 = 1 - cosw; b2 = (1 - cosw) / 2;
+      a0 = 1 + alpha; a1 = -2 * cosw; a2 = 1 - alpha;
+    );
+  );
+
+  p = mem_base + idx * 5; 
+  ai = 1 / a0;
+  p[0] = b0 * ai; p[1] = b1 * ai; p[2] = b2 * ai; p[3] = a1 * ai; p[4] = a2 * ai;
+);
+
+function update_bs2b()
+(
+  GB_lo = slider7*(-5/6)-3; GB_hi = slider7*(1/6)-3;
+  G_lo = 10^(GB_lo/20); G_hi = 1 - 10^(GB_hi/20);
+  Fc_lo = slider6; Fc_hi = Fc_lo * 2^((GB_lo - 20*log(G_hi)/log(10))/12);
+  x = exp(-2*$pi*Fc_lo/srate); b1_lo = x; a0_lo = G_lo*(1-x);
+  x = exp(-2*$pi*Fc_hi/srate); b1_hi = x; a0_hi = 1 - G_hi*(1-x); a1_hi = -x;
+  gain_cf = 1 / (1 - G_hi + G_lo);
+);
+
+function update_params()
+(
+  v_ov = srate/44100;
+  p_f = 0.1245 / v_ov; p_r = 0.46; p_K = tan($pi * p_f); p_n = 1.0 / (1.0 + p_K / p_r + p_K * p_K);
+  ph_a0 = p_K / p_r * p_n; ph_a1 = 0; ph_a2 = -ph_a0; ph_b1 = 2.0 * (p_K * p_K - 1.0) * p_n; ph_b2 = (1.0 - p_K / p_r + p_K * p_K) * p_n;
+  v_f=0.0385/v_ov; v_r=0.0825; v_K=tan($pi*v_f); v_n=1/(1+v_K/v_r+v_K*v_K);
+  vi_a0=v_K/v_r*v_n; vi_a2=-vi_a0; vi_b1=2*(v_K*v_K-1)*v_n; vi_b2=(1-v_K/v_r+v_K*v_K) * v_n;
+  sub_iirAmount=(2250/44100)/v_ov;
+  na=0;
+  setup_biquad_to_mem(mem_aura_f,na,130,0,0.707,3); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,130,0,0.707,3); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,130,0,0.707,3); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,14207,1.9,4.22,0); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,853,2.2,4.749,0); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,6826,3.1,4.17,0); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,10762,3,4.01,0); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,12390,2.8,3.65,0); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,3412,-0.8,1,0); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,1836,2.5,2.55,0); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,7693,5.7,1.79,0); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,517,-0.9,3.397,0); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,387,-0.9,2.57,0); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,7850,-11.8,0.7,2); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,7850,0,0.707,4); na+=1;
+  setup_biquad_to_mem(mem_aura_f,na,7850,0,0.707,4); na+=1;
+  _num_aura=na; update_bs2b();
+);
+
+function update_itd()
+(
+cf_delay_spl = slider9 * srate * 0.001;
+cf_delay_int = floor(cf_delay_spl);
+cf_delay_frac = cf_delay_spl - cf_delay_int;
+);
+
+update_params();
+setup_biquad_to_mem(mem_fullrange_f, 0, 260, 0, 0.707, 3); // HPF
+
+@slider
+slider6 != last_cf_cutoff || slider7 != last_cf_sup || slider5 != last_cf_state ? ( 
+  update_bs2b(); 
+  last_cf_cutoff = slider6; last_cf_sup = slider7; last_cf_state = slider5;
+);
+slider1 != last_bypass ? ( memset(mem_hp_s, 0, 2048); last_bypass = slider1; );
+slider8 != last_hp_index ? ( last_hp_index = slider8; hp_need_reload = 1; );
+slider3 != last_mode ? (
+  fade_state = 1; // Запуск фейда при изменении слайдера
+  last_mode = slider3;
+  //update_itd();
+);
+
+@block
+srate!=last_srate ? ( last_srate=srate; update_params(); hp_need_reload = 1 );
+gmem[2] == 2 ? ( gmem[2] = 0; hp_need_reload = 1; );
+
+// --- СИНХРОНИЗАЦИЯ С ТУЛБАРОМ (gmem[3]) ---
+
+// Проверка А: Если кто-то нажал кнопку в тулбаре (изменил gmem[3])
+gmem[3] != last_mode ? (
+  slider3 = gmem[3];    // Обновляем слайдер плагина
+  last_mode = gmem[3];  // Синхронизируем контрольную точку
+  fade_state = 1;       // Запускаем твой плавный переход (фейд)
+  slider_automate(slider3); // Сообщаем Риперу, что слайдер изменился
+);
+
+// Проверка Б: Если ты изменил режим в самом плагине (GUI или слайдер)
+slider3 != gmem[3] ? (
+  gmem[3] = slider3;    // Пишем в память, чтобы кнопки тулбара зажглись/погасли
+  last_mode = slider3;  // Синхронизируем контроль
+);
+
+hp_need_reload ? (
+  hp_need_reload = 0; hp_num_filters = 0; hp_preamp_db = 0; scroll_pos = 0;
+  f_db = file_open(#db_path);
+  
+  #current_fn = "";
+  
+  f_db > 0 ? (
+    i = 0;
+    while(file_string(f_db, #line) > 0) (
+      i == slider8 ? (
+        strcpy(#current_fn, #line);
+        str_setchar(#current_fn, strlen(#current_fn)-1, 0); 
+      );
+      i += 1;
+    );
+    file_close(f_db);
+    num_total_presets = i;
+  );
+
+  strlen(#current_fn) > 0 ? (
+    // --- НОВАЯ ЛОГИКА ИМЕНИ ---
+    strcpy(#hp_preset_name, #current_fn); // Копируем имя файла
+    _dot_pos = -1;
+    _i = 0;
+    _len = strlen(#hp_preset_name);
+    loop(_len,
+      str_getchar(#hp_preset_name, _i) == '.' ? _dot_pos = _i;
+      _i += 1;
+    );
+    _dot_pos >= 0 ? str_setchar(#hp_preset_name, _dot_pos, 0); // Обрезаем на точке
+    // --------------------------
+
+    #full_path = "roof_control/phones_eq/";
+    strcat(#full_path, #current_fn);
+    f_hp = file_open(#full_path);
+    f_hp > 0 ? (
+      #clear = '';
+      while(file_string(f_hp, #clear) > 0) (
+        match("*Preamp: %f*", #clear, slider11);
+        match("*PK*Fc %f*Gain %f*Q %f*", #clear, f, g, q) ? ( setup_biquad_to_mem(mem_hp_f, hp_num_filters, f, g, q, 0); hp_num_filters += 1; ) :
+        match("*LSC*Fc %f*Gain %f*Q %f*", #clear, f, g, q) ? ( setup_biquad_to_mem(mem_hp_f, hp_num_filters, f, g, q, 1); hp_num_filters += 1; ) :
+        match("*HSC*Fc %f*Gain %f*Q %f*", #clear, f, g, q) ? ( setup_biquad_to_mem(mem_hp_f, hp_num_filters, f, g, q, 2); hp_num_filters += 1; );
+      );
+      file_close(f_hp);
+      p_gain = slider11;
+    ) : ( #hp_preset_name = " Err: File missing "; );
+  ) : ( #hp_preset_name = " No Preset "; );
+);
+
+@sample
+// 1. Обработка фейда (плавное переключение режимов)
+fade_state == 1 ? ( fade -= fade_step; fade <= 0 ? ( fade = 0; fade_state = 2; ); );
+fade_state == 2 ? ( mode = slider3; reset_states(); fade_state = 3; );
+fade_state == 3 ? ( fade += fade_step; fade >= 1 ? ( fade = 1; fade_state = 0; ); );
+
+// 2. Проверка байпаса (Slider 1)
+slider1 == 1 ? ( 
+  spl0 *= b_gain; 
+  spl1 *= b_gain; 
+) : (
+  // 3. Выбор режима моделирования (Sub, Cube, Smartphone и т.д.)
+  mode == 1 ? ( // Subwoofer
+    sL=spl0*1.42; sR=spl1*1.42; sg=((1.42-1)*0.75)+1; si=0;
+    loop(25,
+      mem_subs_L[si]=(mem_subs_L[si]*(1-sub_iirAmount))+(sL*sub_iirAmount); sL=mem_subs_L[si];
+      mem_subs_R[si]=(mem_subs_R[si]*(1-sub_iirAmount))+(sR*sub_iirAmount); sR=mem_subs_R[si];
+      sL*=sg; sR*=sg; sg=((sg-1)*0.75)+1; sL=max(-1,min(1,sL)); sR=max(-1,min(1,sR)); si+=1;
+    );
+    mem_subs_L[25]=(mem_subs_L[25]*(1-sub_iirAmount))+(sL*sub_iirAmount);
+    mem_subs_R[25]=(mem_subs_R[25]*(1-sub_iirAmount))+(sR*sub_iirAmount);
+    spl0=max(-1,min(1,mem_subs_L[25])); spl1=max(-1,min(1,mem_subs_R[25]));
+  ) :
+  mode == 2 ? ( // Transient Monitor (Slew)
+    slL = (spl0 - sl_lastL) * sl_trim; slR = (spl1 - sl_lastR) * sl_trim; 
+    sl_lastL = spl0; sl_lastR = spl1;
+    spl0 = max(-1,min(1,slL)); spl1 = max(-1,min(1,slR));
+  ) :
+ mode == 3 ? ( // Auracube (теперь тоже на TDF2)
+     as0 = spl0; as1 = spl1; ai = 0;
+     loop(_num_aura,
+       ap = mem_aura_f + ai*5; 
+       as_p = mem_aura_s + ai*4; // TDF2 нужно всего 4 ячейки (2 на L, 2 на R)
+ 
+       // Левый канал
+       aoutL = as0 * ap[0] + as_p[0];
+       as_p[0] = as0 * ap[1] - aoutL * ap[3] + as_p[1];
+       as_p[1] = as0 * ap[2] - aoutL * ap[4];
+       as0 = aoutL;
+ 
+       // Правый канал
+       aoutR = as1 * ap[0] + as_p[2];
+       as_p[2] = as1 * ap[1] - aoutR * ap[3] + as_p[3];
+       as_p[3] = as1 * ap[2] - aoutR * ap[4];
+       as1 = aoutR; 
+       
+       ai += 1;
+     );
+     spl0 = as0; spl1 = as1;
+  ) :
+  mode == 4 ? ( // Smartphone
+    mono = (spl0 + spl1) * 0.5; inL = sin(mono); inR = sin(mono);
+    outL = (inL * ph_a0) + ph_sL1; ph_sL1 = (inL * ph_a1) - (outL * ph_b1) + ph_sL2; ph_sL2 = (inL * ph_a2) - (outL * ph_b2);
+    outR = (inR * ph_a0) + ph_sR1; ph_sR1 = (inR * ph_a1) - (outR * ph_b1) + ph_sR2; ph_sR2 = (inR * ph_a2) - (outR * ph_b2);
+    spl0 = asin(max(-1,min(1,outL))); spl1 = asin(max(-1,min(1,outR)));
+  ) :
+  mode == 5 ? ( // Vinyl
+    inL = sin(spl0); inR = sin(spl1);
+    vL = (inL * vi_a0) + vi_sL1; vi_sL1 = (-vL * vi_b1) + vi_sL2; vi_sL2 = (inL * vi_a2) - (vL * vi_b2);
+    vR = (inR * vi_a0) + vi_sR1; vi_sR1 = (-vR * vi_b1) + vi_sR2; vi_sR2 = (inR * vi_a2) - (vR * vi_b2);
+    spl0 = asin(max(-1,min(1,vL))); spl1 = asin(max(-1,min(1,vR)));
+  ) :
+ mode == 6 ? ( 
+       origL = spl0; origR = spl1;
+       
+       // --- ШАГ 1: Генерируем "Саб" (копия твоей логики из mode 1) ---
+       sL = origL * 1.42; sR = origR * 1.42; 
+       sg = ((1.42-1)*0.75)+1; si = 0;
+       loop(25,
+         mem_subs_L[si] = (mem_subs_L[si] * (1 - sub_iirAmount)) + (sL * sub_iirAmount); sL = mem_subs_L[si];
+         mem_subs_R[si] = (mem_subs_R[si] * (1 - sub_iirAmount)) + (sR * sub_iirAmount); sR = mem_subs_R[si];
+         sL *= sg; sR *= sg; sg = ((sg - 1) * 0.75) + 1; 
+         sL = max(-1, min(1, sL)); sR = max(-1, min(1, sR)); si += 1;
+       );
+       // 26-й каскад
+       sL_final = (mem_subs_L[25] * (1 - sub_iirAmount)) + (sL * sub_iirAmount);
+       sR_final = (mem_subs_R[25] * (1 - sub_iirAmount)) + (sR * sub_iirAmount);
+       mem_subs_L[25] = sL_final; mem_subs_R[25] = sR_final;
+ 
+       // --- ШАГ 2: Фильтруем оригиналы через HPF 200Гц ---
+       hp = mem_fullrange_f;
+       
+       // Левый верх
+       hpL = origL * hp[0] + fr_sL1;
+       fr_sL1 = origL * hp[1] - hpL * hp[3] + fr_sL2;
+       fr_sL2 = origL * hp[2] - hpL * hp[4];
+ 
+       // Правый верх
+       hpR = origR * hp[0] + fr_sR1;
+       fr_sR1 = origR * hp[1] - hpR * hp[3] + fr_sR2;
+       fr_sR2 = origR * hp[2] - hpR * hp[4];
+ 
+       // --- ШАГ 3: Финальный замес ---
+       // Вычитаем эмулированный саб из отфильтрованного сигнала
+       spl0 = (hpL + sL_final);
+       spl1 = (hpR + sR_final);
+   );
+
+  // 4. Кроссфид (применяется поверх режимов 0, 3, 5, 6)
+  (slider5 == 0 && (mode == 0 || mode == 3 || mode == 5 || mode == 6)) ? (
+    inL = spl0; inR = spl1; 
+    loL = a0_lo*inL + b1_lo*loL; loR = a0_lo*inR + b1_lo*loR;
+    tmpHiL = a0_hi*inL + a1_hi*asisL + b1_hi*hiL; 
+    tmpHiR = a0_hi*inR + a1_hi*asisR + b1_hi*hiR;
+    asisL = inL; asisR = inR; hiL = tmpHiL; hiR = tmpHiR; 
+    
+    cf_bufL[cf_writepos] = loL;
+    cf_bufR[cf_writepos] = loR;
+    
+    d_loL = cf_read(cf_bufL, cf_writepos, cf_delay_int, cf_delay_frac);
+    d_loR = cf_read(cf_bufR, cf_writepos, cf_delay_int, cf_delay_frac);
+    
+    spl0 = (hiL + d_loR) * gain_cf * 1.2;
+    spl1 = (hiR + d_loL) * gain_cf * 1.2;
+    
+    cf_writepos = (cf_writepos + 1) & cf_bufmask;
+  );
+  
+
+  // 5. КОРРЕКЦИЯ НАУШНИКОВ (Вынесена из условий mode, работает всегда)
+  slider10 == 0 ? (
+  hpL = spl0; hpR = spl1; hi = 0;
+  loop(hp_num_filters,
+    hp = mem_hp_f + hi*5;  
+    hs = mem_hp_s + hi*4; 
+
+    outL = hpL * hp[0] + hs[0];
+    hs[0] = hpL * hp[1] - outL * hp[3] + hs[1];
+    hs[1] = hpL * hp[2] - outL * hp[4];
+    hpL = outL;
+
+    outR = hpR * hp[0] + hs[2];
+    hs[2] = hpR * hp[1] - outR * hp[3] + hs[3];
+    hs[3] = hpR * hp[2] - outR * hp[4];
+    hpR = outR;
+
+    hi += 1;
+  );
+  spl0 = hpL * 10^(slider11/20);
+  spl1 = hpR * 10^(slider11/20);
+);
+
+  spl0 *= b_gain; 
+  spl1 *= b_gain; 
+
+);
+
+
+// Применяем мастер-фейд и байпас гейн
+spl0 *= fade; spl1 *= fade;
+
+@gfx 1280 698
+ui_scale = min(gfx_w / canvas_w, gfx_h / canvas_h);
+off_x = (gfx_w - (canvas_w * ui_scale)) * 0.5;
+off_y = (gfx_h - (canvas_h * ui_scale)) * 0.5;
+
+// Функция проверки попадания мыши в непрозрачные зоны ассетов
+function check_hit(idx) local(r, g, b, mx, my) (
+  gfx_dest = idx;
+  mx = (mouse_x - off_x) / ui_scale; 
+  my = (mouse_y - off_y) / ui_scale;
+  (mx >= 0 && mx < canvas_w && my >= 0 && my < canvas_h) ? (
+    gfx_x = mx; gfx_y = my; gfx_getpixel(r, g, b);
+  ) : ( r = g = b = 0; );
+  gfx_dest = -1; 
+  (r > 0.1 || g > 0.1 || b > 0.1); 
+);
+
+// --- 1. ФОН ---
+gfx_mode = 0; gfx_a = 1; gfx_x = off_x; gfx_y = off_y;
+// Если slider1 == 1 (Bypass On), рисуем background_dark (17), иначе обычный (0)
+gfx_blit(slider1 == 1 ? 17 : 0, ui_scale, 0);
+
+// --- 2. ЛОГИКА КНОПКИ BYPASS (Всегда активна) ---
+hit_bypass = (!is_config_open) ? check_hit(18) : 0;
+hit_bypass ? gfx_states[18] = min(1, gfx_states[18] + 0.15) : gfx_states[18] = max(0, gfx_states[18] - 0.1);
+
+// Отрисовка подсвеченного слоя при наведении на байпас
+gfx_states[18] > 0 ? (
+  gfx_mode = 0; gfx_x = off_x; gfx_y = off_y;
+  gfx_a = gfx_states[18]; 
+  gfx_blit(19, ui_scale, 0); // bypass_select.png
+);
+
+// Отрисовка самой кнопки байпаса (основной слой)
+gfx_mode = 0; 
+gfx_x = off_x; 
+gfx_y = off_y;
+
+// Если slider1 == 1 (Bypass ON) -> непрозрачность 1.0
+// Если slider1 == 0 (Bypass OFF) -> непрозрачность 0.5
+gfx_a = (slider1 == 1) ? 1.0 : 0.7;
+
+gfx_blit(18, ui_scale, 0);
+
+// --- 3. ИНТЕРФЕЙС РЕЖИМОВ (Блокируется при активном байпасе) ---
+!slider1 ? (
+  
+  // Отрисовка "горящего" индикатора текущего режима
+  active_idx = -1;
+  slider3 == 0 ? active_idx = 10;
+  slider3 == 1 ? active_idx = 11;
+  slider3 == 2 ? active_idx = 12;
+  slider3 == 3 ? active_idx = 9; 
+  slider3 == 4 ? active_idx = 13;
+  slider3 == 5 ? active_idx = 8; 
+  slider3 == 6 ? active_idx = 16;
+
+  active_idx >= 0 ? (
+    gfx_mode = 0; gfx_a = 1; gfx_x = off_x; gfx_y = off_y;
+    gfx_blit(active_idx, ui_scale, 0);
+  );
+
+  // Цикл отрисовки ховера для всех иконок выбора режима
+  i = 0;
+  loop(7, 
+    i == 0 ? img = 3; i == 1 ? img = 4; i == 2 ? img = 5;
+    i == 3 ? img = 2; i == 4 ? img = 6; i == 5 ? img = 1; i == 6 ? img = 14;
+
+    is_active = (slider3 == i);
+    // Проверяем попадание, только если конфиг закрыт и это не текущий активный режим
+    hit = (!is_config_open && !is_active) ? check_hit(img) : 0;
+    hit ? gfx_states[img] = min(1, gfx_states[img] + 0.15) : gfx_states[img] = max(0, gfx_states[img] - 0.1);
+    
+    gfx_states[img] > 0 ? (
+      gfx_mode = 0; gfx_x = off_x; gfx_y = off_y;
+      blit_idx = (img == 14) ? 15 : img;
+      gfx_a = gfx_states[img] * 0.3; 
+      gfx_blit(blit_idx, ui_scale, 0);
+    );
+    i += 1;
+  );
+
+  // Ховер для шестеренки настроек
+  hit_config = (!is_config_open) ? check_hit(7) : 0;
+  hit_config ? gfx_states[7] = min(1, gfx_states[7] + 0.15) : gfx_states[7] = max(0, gfx_states[7] - 0.1);
+  gfx_states[7] > 0 ? (
+    gfx_mode = 0; gfx_x = off_x; gfx_y = off_y;
+    gfx_a = gfx_states[7] * 0.3;
+    gfx_blit(7, ui_scale, 0);
+  );
+);
+
+// --- 4. ОКНО КОНФИГУРАЦИИ (Модальное) ---
+is_config_open ? (
+  gfx_mode = 0; gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.7; 
+  gfx_rect(0, 0, gfx_w, gfx_h); 
+  
+  win_w = 900 * ui_scale; win_h = 650 * ui_scale; 
+  win_x = (gfx_w - win_w) * 0.5; win_y = (gfx_h - win_h) * 0.5;
+  gfx_r = 0.08; gfx_g = 0.08; gfx_b = 0.08; gfx_a = 1; 
+  gfx_rect(win_x, win_y, win_w, win_h); 
+
+  close_size = 25 * ui_scale; 
+  close_x = win_x + win_w - close_size - 25; close_y = win_y + 25;
+  is_hover_close = (mouse_x > close_x && mouse_x < close_x + close_size && mouse_y > close_y && mouse_y < close_y + close_size);
+  gfx_r = is_hover_close ? 1 : 0.5; gfx_g = is_hover_close ? 1 : 0.5; gfx_b = is_hover_close ? 1 : 0.5;
+  thickness = 6; ti = 0;
+  loop(thickness,
+    gfx_line(close_x + ti, close_y, close_x + close_size + ti, close_y + close_size);
+    gfx_line(close_x + close_size + ti, close_y, close_x + ti, close_y + close_size);
+    ti += 1;
+  );
+
+  gfx_r = 1; gfx_g = 1; gfx_b = 1; gfx_setfont(1, "Arial", 35 * ui_scale, 'b');
+  #title = "HEADPHONE CONFIG"; gfx_measurestr(#title, t_w, t_h);
+  gfx_x = win_x + (win_w - t_w) * 0.5; gfx_y = win_y + 45 * ui_scale; gfx_drawstr(#title);
+
+  left_align = win_x + 50 * ui_scale;
+  s_x = left_align + 160 * ui_scale; 
+  s_w = 560 * ui_scale; 
+  right_col_x = s_x + s_w - 120 * ui_scale;
+
+  // Correction Profile Section
+  gfx_setfont(2, "Arial", 18 * ui_scale); gfx_r = 0.4; gfx_g = 0.4; gfx_b = 0.4;
+  gfx_x = left_align; gfx_y = win_y + 110 * ui_scale; gfx_drawstr("CORRECTION PROFILE:");
+  btn_eq_y = win_y + 145 * ui_scale;
+  is_hover_eq = (mouse_x > left_align && mouse_x < left_align + 120 * ui_scale && mouse_y > btn_eq_y && mouse_y < btn_eq_y + 40 * ui_scale);
+  gfx_r = (slider10 == 0) ? 0.1 : 0.3; gfx_g = (slider10 == 0) ? 0.6 : 0.1; gfx_b = (slider10 == 0) ? 0.2 : 0.1;
+  gfx_rect(left_align, btn_eq_y, 120 * ui_scale, 40 * ui_scale);
+  gfx_r = 1; gfx_g = 1; gfx_b = 1; gfx_x = left_align + 18 * ui_scale; gfx_y = btn_eq_y + 11 * ui_scale;
+  gfx_drawstr(slider10 == 0 ? "ENABLED" : "DISABLED");
+
+  is_eq_active = (slider10 == 0); 
+  gfx_setfont(3, "Arial", 30 * ui_scale, 'b');
+  name_y = win_y + 148 * ui_scale;
+  
+  is_hover_prev = is_eq_active ? (mouse_x > s_x && mouse_x < s_x + 35 * ui_scale && mouse_y > name_y && mouse_y < name_y + 40 * ui_scale) : 0;
+  gfx_a = is_eq_active ? 1.0 : 0.25; 
+  gfx_r = is_hover_prev ? 1 : 0.4; gfx_g = is_hover_prev ? 0.8 : 0.4; gfx_b = 0;
+  gfx_x = s_x; gfx_y = name_y; gfx_drawstr("<");
+  
+  arrow_next_x = s_x + s_w - 165 * ui_scale;
+  is_hover_next = is_eq_active ? (mouse_x > arrow_next_x && mouse_x < arrow_next_x + 35 * ui_scale && mouse_y > name_y && mouse_y < name_y + 40 * ui_scale) : 0;
+  gfx_r = is_hover_next ? 1 : 0.4; gfx_g = is_hover_next ? 0.8 : 0.4; gfx_b = 0;
+  gfx_x = arrow_next_x; gfx_y = name_y; gfx_drawstr(">");
+
+  // Бегущая строка пресета
+  gfx_measurestr(#hp_preset_name, name_w, name_h);
+  side_padding = 18 * ui_scale; 
+  name_w += side_padding * 2; 
+  padding = 10 * ui_scale;
+  clip_x = s_x + 35 * ui_scale + padding;
+  clip_w = arrow_next_x - clip_x - padding;
+  clip_y = name_y - 6;
+  clip_h = 45 * ui_scale;
+  diff = name_w - clip_w;
+
+  (diff > 0) ? (
+      _cur_t = time_precise();
+      _dt = _cur_t - last_scroll_time;
+      last_scroll_time = _cur_t;
+      is_eq_active ? (
+          (scroll_pause_timer > 0) ? scroll_pause_timer -= _dt : (
+            scroll_speed = 50 * ui_scale;
+            scroll_pos += scroll_dir * scroll_speed * _dt;
+            scroll_pos >= diff ? ( scroll_pos = diff; scroll_dir = -1; scroll_pause_timer = 2; );
+            scroll_pos <= 0 ? ( scroll_pos = 0; scroll_dir = 1; scroll_pause_timer = 2; );
+          );
+      );
+      draw_x = -scroll_pos + side_padding; 
+  ) : (
+      draw_x = (clip_w - name_w) * 0.5 + side_padding;
+      scroll_pos = 0; 
+  );
+
+  gfx_dest = 100;
+  gfx_setimgdim(100, clip_w, clip_h);
+  gfx_r = 0.08; gfx_g = 0.08; gfx_b = 0.08; gfx_a = 1;
+  gfx_rect(0, 0, clip_w, clip_h); 
+  gfx_r = 0.1; gfx_g = 0.8; gfx_b = 1;
+  gfx_a = is_eq_active ? 1.0 : 0.25; 
+  gfx_x = draw_x; gfx_y = (clip_h - name_h) * 0.5;
+  gfx_drawstr(#hp_preset_name);
+  
+  // Градиентное затемнение краев бегущей строки
+  fade_w = 15 * ui_scale; 
+  i = 0; loop(fade_w, gfx_a = 1 - (i / fade_w); gfx_r = 0.08; gfx_g = 0.08; gfx_b = 0.08; gfx_line(i, 0, i, clip_h); i += 1; );
+  i = 0; loop(fade_w, gfx_a = i / fade_w; gfx_r = 0.08; gfx_g = 0.08; gfx_b = 0.08; gfx_line(clip_w - fade_w + i, 0, clip_w - fade_w + i, clip_h); i += 1; );
+  
+  gfx_dest = -1; gfx_a = 1;
+  gfx_blit(100, 1, 0, 0, 0, clip_w, clip_h, clip_x, clip_y, clip_w, clip_h);
+
+  // Service Info
+  gfx_setfont(4, "Arial", 15 * ui_scale); gfx_r = 0.4; gfx_g = 0.4; gfx_b = 0.4;
+  #info_str = ""; sprintf(#info_str, "Total: %d  |  Filters: %d", num_total_presets, hp_num_filters);
+  gfx_measurestr(#info_str, info_w, info_h);
+  gfx_x = clip_x + (clip_w - info_w) * 0.5; gfx_y = clip_y + clip_h + 4 * ui_scale;
+  gfx_drawstr(#info_str);
+
+  // Кнопки управления в конфиге
+  btn_upd_y = win_y + 148 * ui_scale; btn_upd_w = 120 * ui_scale; btn_upd_h = 35 * ui_scale;
+  is_hover_upd = is_eq_active ? (mouse_x > right_col_x && mouse_x < right_col_x + btn_upd_w && mouse_y > btn_upd_y && mouse_y < btn_upd_y + btn_upd_h) : 0;
+  gfx_a = is_eq_active ? 1.0 : 0.25;
+  gfx_r = 0.15; gfx_g = is_hover_upd ? 0.7 : 0.4; gfx_b = 0.15;
+  gfx_rect(right_col_x, btn_upd_y, btn_upd_w, btn_upd_h);
+  gfx_r = 1; gfx_g = 1; gfx_b = 1; gfx_setfont(4, "Arial", 14 * ui_scale);
+  gfx_measurestr("UPDATE DB", u_w, u_h);
+  gfx_x = right_col_x + (btn_upd_w - u_w) * 0.5; gfx_y = btn_upd_y + (btn_upd_h - u_h) * 0.5; gfx_drawstr("UPDATE DB");
+
+  // Слайдер Profile gain
+  pre_y = win_y + 270 * ui_scale; pre_s_y = pre_y + 5 * ui_scale;
+  gfx_a = is_eq_active ? 1.0 : 0.25;
+  gfx_r = 0.15; gfx_g = 0.15; gfx_b = 0.15; gfx_rect(s_x, pre_s_y, s_w, 4 * ui_scale);
+  val11 = (slider11 + 12) / 24; gfx_r = 1; gfx_g = 0.6; gfx_b = 0.2; 
+  gfx_circle(s_x + val11 * s_w, pre_s_y + 2 * ui_scale, 8 * ui_scale, 1);
+  gfx_setfont(2, "Arial", 18 * ui_scale);
+  gfx_x = s_x; gfx_y = pre_s_y - 28 * ui_scale; gfx_printf("Gain: %.1f dB", slider11);
+
+  // Кнопка Save
+
+  btn_pr_y = pre_s_y + 25 * ui_scale; btn_pr_w = 120 * ui_scale; btn_pr_h = 35 * ui_scale;
+  is_h_save = is_eq_active ? (mouse_x > right_col_x && mouse_x < right_col_x + btn_pr_w && mouse_y > btn_pr_y && mouse_y < btn_pr_y + btn_pr_h) : 0;
+  gfx_r = 0.2; gfx_g = is_h_save ? 0.35 : 0.25; gfx_b = 0.4; gfx_rect(right_col_x, btn_pr_y, btn_pr_w, btn_pr_h);
+  gfx_r = 1; gfx_g = 1; gfx_b = 1; gfx_measurestr("SAVE", b_sw, b_sh);
+  gfx_x = right_col_x + (btn_pr_w - b_sw) * 0.5; gfx_y = btn_pr_y + (btn_pr_h - b_sh) * 0.5; gfx_drawstr("SAVE");
+
+  // Crossfeed Section
+  gfx_a = 1; gfx_setfont(2, "Arial", 18 * ui_scale); gfx_r = 0.4; gfx_g = 0.4; gfx_b = 0.4;
+  gfx_x = left_align; gfx_y = win_y + 400 * ui_scale; gfx_drawstr("TRUE STEREO MODELING:");
+  btn_cf_y = win_y + 435 * ui_scale;
+  is_hover_cf = (mouse_x > left_align && mouse_x < left_align + 120 * ui_scale && mouse_y > btn_cf_y && mouse_y < btn_cf_y + 40 * ui_scale);
+  gfx_r = (slider5 == 0) ? 0.1 : 0.3; gfx_g = (slider5 == 0) ? 0.6 : 0.1; gfx_b = (slider5 == 0) ? 0.2 : 0.1;
+  gfx_rect(left_align, btn_cf_y, 120 * ui_scale, 40 * ui_scale);
+  gfx_r = 1; gfx_g = 1; gfx_b = 1; gfx_x = left_align + 18 * ui_scale; gfx_y = btn_cf_y + 11 * ui_scale;
+  gfx_drawstr(slider5 == 0 ? "ENABLED" : "DISABLED");
+
+  s_y_start = win_y + 480 * ui_scale; s_step = 60 * ui_scale;
+  gfx_a = slider5 == 0 ? 1.0 : 0.25;
+  
+  gfx_r = 0.15; gfx_g = 0.15; gfx_b = 0.15; gfx_rect(s_x, s_y_start, s_w, 4 * ui_scale);
+  val6 = (slider6 - 300) / 900; gfx_r = 0.1; gfx_g = 0.8; gfx_b = 1; 
+  gfx_circle(s_x + val6 * s_w, s_y_start + 2 * ui_scale, 9 * ui_scale, 1);
+  gfx_x = s_x; gfx_y = s_y_start - 28 * ui_scale; gfx_printf("Cutoff: %d Hz", slider6);
+
+  s7_y = s_y_start + s_step;
+  gfx_r = 0.15; gfx_g = 0.15; gfx_b = 0.15; gfx_rect(s_x, s7_y, s_w, 4 * ui_scale);
+  val7 = (slider7 - 1) / 9; gfx_r = 0.1; gfx_g = 0.8; gfx_b = 1;
+  gfx_circle(s_x + val7 * s_w, s7_y + 2 * ui_scale, 9 * ui_scale, 1);
+  gfx_x = s_x; gfx_y = s7_y - 28 * ui_scale; gfx_printf("Suppression: %.1f dB", slider7);
+
+  s9_y = s_y_start + s_step * 2;
+  gfx_r = 0.15; gfx_g = 0.15; gfx_b = 0.15; gfx_rect(s_x, s9_y, s_w, 4 * ui_scale);
+  val9 = slider9 / 0.7; gfx_r = 0.1; gfx_g = 0.8; gfx_b = 1;
+  gfx_circle(s_x + val9 * s_w, s9_y + 2 * ui_scale, 9 * ui_scale, 1);
+  gfx_x = s_x; gfx_y = s9_y - 28 * ui_scale; gfx_printf("ITD: %.2f ms", slider9);
+);
+
+// --- 5. ОБРАБОТКА МЫШИ ---
+(mouse_cap & 1) ? (
+  !is_config_open ? (
+    !(last_cap & 1) ? (
+      // Байпас работает всегда
+      check_hit(18) ? (
+        slider1 = 1 - slider1; 
+        slider_automate(slider1);
+        scroll_pos = 0; scroll_dir = 1; scroll_pause_timer = 2;
+        fade_state = 1;
+      ) : 
+      // Остальные кнопки только если байпас выключен
+      !slider1 ? (
+        check_hit(3) ? (slider3 = 0; slider_automate(slider3); fade_state = 1;);
+        check_hit(4) ? (slider3 = 1; slider_automate(slider3); fade_state = 1;);
+        check_hit(5) ? (slider3 = 2; slider_automate(slider3); fade_state = 1;);
+        check_hit(2) ? (slider3 = 3; slider_automate(slider3); fade_state = 1;);
+        check_hit(6) ? (slider3 = 4; slider_automate(slider3); fade_state = 1;);
+        check_hit(1) ? (slider3 = 5; slider_automate(slider3); fade_state = 1;);
+        check_hit(14) ? (slider3 = 6; slider_automate(slider3); fade_state = 1;); 
+        check_hit(7) ? (is_config_open = 1; scroll_pos = 0; scroll_dir = 1; scroll_pause_timer = 2; last_scroll_time = time_precise(););
+      );
+    );
+  ) : (
+    // Логика внутри конфига
+    !(last_cap & 1) ? (
+      curr_t = time_precise(); is_double = (curr_t - last_click_time < 0.25); last_click_time = curr_t;
+      active_slider = 0;
+      is_hover_eq ? ( slider10 = 1 - slider10; slider_automate(slider10); );
+      is_hover_close ? is_config_open = 0;
+      
+      slider10 == 0 ? (
+        is_hover_upd ? ( gmem[0] = 1; scroll_pos = 0; );
+        is_hover_prev ? ( slider8 = max(0, slider8 - 1); slider_automate(slider8); hp_need_reload = 1; scroll_pos = 0; scroll_dir = 1; scroll_pause_timer = 2;);
+        is_hover_next ? ( slider8 = min(num_total_presets - 1, slider8 + 1); slider_automate(slider8); hp_need_reload = 1; scroll_pos = 0; scroll_dir = 1; scroll_pause_timer = 2; );
+        (mouse_x > s_x-10 && mouse_x < s_x+s_w+10 && mouse_y > pre_s_y-20 && mouse_y < pre_s_y+20) ? (
+          is_double ? (slider11=p_gain; slider_automate(slider11);) : active_slider=11;
+        );
+      );
+      
+      is_h_save ? save_profile();
+      is_hover_cf ? ( slider5 = 1 - slider5; slider_automate(slider5); update_bs2b(); );
+      
+      slider5 == 0 ? (
+        (mouse_x > s_x-10 && mouse_x < s_x+s_w+10 && mouse_y > s_y_start-20 && mouse_y < s_y_start+20) ? (is_double ? (slider6=700; slider_automate(slider6); update_bs2b();) : active_slider=6;);
+        (mouse_x > s_x-10 && mouse_x < s_x+s_w+10 && mouse_y > s_y_start+s_step-20 && mouse_y < s_y_start+s_step+20) ? (is_double ? (slider7=4.5; slider_automate(slider7); update_bs2b();) : active_slider=7;);
+        (mouse_x > s_x-10 && mouse_x < s_x+s_w+10 && mouse_y > s_y_start+s_step*2-20 && mouse_y < s_y_start+s_step*2+20) ? (is_double ? (slider9=0.0; slider_automate(slider9);) : active_slider=9;);
+      );
+      (mouse_x < win_x || mouse_x > win_x + win_w || mouse_y < win_y || mouse_y > win_y + win_h) ? is_config_open = 0;
+    );
+    
+    // Перетаскивание слайдеров
+    active_slider == 6 ? (slider6 = max(300, min(1200, 300 + ((mouse_x - s_x) / s_w) * 900)); slider_automate(slider6); update_bs2b(););
+    active_slider == 7 ? (slider7 = max(1, min(10, 1 + ((mouse_x - s_x) / s_w) * 9)); slider_automate(slider7); update_bs2b(););
+    active_slider == 9 ? (slider9 = max(0, min(0.7, ((mouse_x - s_x) / s_w) * 0.7)); slider_automate(slider9); update_itd(););
+    active_slider == 11 ? (slider11 = max(-12, min(12, -12 + ((mouse_x - s_x) / s_w) * 24)); slider11 = floor(slider11 * 10) / 10; slider_automate(slider11); );
+  );
+) : ( active_slider = 0; );
+last_cap = mouse_cap;
+
+// --- 6. КРУПНАЯ НАДПИСЬ BYPASS ПО ЦЕНТРУ ---
+slider1 == 1 ? (
+  gfx_setfont(10, "Arial", 80 * ui_scale, 'b');
+  #bypass_text = "BYPASS";
+  gfx_measurestr(#bypass_text, b_w, b_h);
+  
+  // Рассчитываем базовые координаты центра
+  base_x = (gfx_w - b_w) * 0.5;
+  base_y = (gfx_h - b_h) * 0.5;
+  
+  // 1. Рисуем тень
+  gfx_x = base_x; gfx_y = base_y;
+  gfx_r = 0; gfx_g = 0; gfx_b = 0; gfx_a = 0.5;
+  gfx_drawstr(#bypass_text); 
+  
+  // 2. Рисуем основной текст поверх со смещением
+  // Возвращаемся к base_x, а не считаем от конца тени!
+  gfx_x = base_x - 3 * ui_scale; 
+  gfx_y = base_y - 3 * ui_scale;
+  gfx_r = 0.9; gfx_g = 0.9; gfx_b = 0.9; gfx_a = 0.9;
+  gfx_drawstr(#bypass_text);
+);
