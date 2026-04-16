@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="Ilya Audio Scripts" commit="main">
+<index version="1" name="Rooftop Studio repo" commit="main">
   <category name="Effects/roof_control">
     <reapack name="roof_control" type="effect" version="0.9">
       <metadata>
-        <description>Roof|control: Headphone Correction and Speaker Emulation</description>
+        <description>Roof|control: Headphone Correction and Mix Check</description>
         <link rel="website">https://github.com/Ilya-audio/roof_JSFX_scripts</link>
       </metadata>
       <version name="0.9">
