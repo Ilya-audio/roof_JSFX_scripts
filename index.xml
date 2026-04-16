@@ -3,13 +3,11 @@
   <metadata>
     <description>Professional monitoring tools and scripts</description>
   </metadata>
-  <category name="..">
+  <category name="Monitoring">
     <reapack name="Roof Control Bundle" type="effect" version="0.9">
       <version name="0.9" author="Ilya Audio">
         <source file="roof_control/roof_control">https://github.com/Ilya-audio/roof_JSFX_scripts/raw/main/Effects/roof_control/roof_control</source>
-        
         <source file="roof_control/roof_bubrik.lua">https://github.com/Ilya-audio/roof_JSFX_scripts/raw/main/Scripts/roof_control/roof_bubrik.lua</source>
-        
         <source file="roof_control/gui/background.png">https://github.com/Ilya-audio/roof_JSFX_scripts/raw/main/Data/roof_control/gui/background.png</source>
         <source file="roof_control/gui/background_dark.png">https://github.com/Ilya-audio/roof_JSFX_scripts/raw/main/Data/roof_control/gui/background_dark.png</source>
         <source file="roof_control/gui/bypass.png">https://github.com/Ilya-audio/roof_JSFX_scripts/raw/main/Data/roof_control/gui/bypass.png</source>
