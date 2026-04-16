@@ -41,13 +41,14 @@ Based on the well-known BS2B project, but with one significant modification. The
 
 1. **Download:** Get the latest release from the [Releases page](https://github.com/Ilya-audio/roof_JSFX_scripts/releases).
 2. **Install:** Extract the contents into your **REAPER Resource Path**.
-3. **Get and Setup your Profile:** * Go to [autoeq.app](https://autoeq.app) and find your headphone model.
+3. **Get and Setup your Profile:**
+    * Go to [autoeq.app](https://autoeq.app) and find your headphone model.
     * In the **Select Equalizer App** dropdown, choose **Custom Parametric EQ**.
     * Adjust filters: Check if there are more "useful" filters available (AutoEQ defaults to 5).
     * Download the `.txt` profile and place it into: `*reaper resource folder*/Data/roof_control/phones_eq`.
-4. **Run Backend:** Go to the "Actions" menu, add and run the `roof_bubrik.lua` satellite script. 
+5. **Run Backend:** Go to the "Actions" menu, add and run the `roof_bubrik.lua` satellite script. 
    * *Note: JSFX has limited file-handling, so this script is essential. If you use SWS, add it to your startup actions.*
-5. **Load Plugin:** Open **JS: roof_control**. Place it in the **Monitoring FX** section AFTER all your meters.
+6. **Load Plugin:** Open **JS: roof_control**. Place it in the **Monitoring FX** section AFTER all your meters.
 
 ---
 
