@@ -15,6 +15,9 @@ I own licenses for several commercial monitoring plugins, but I really wanted a 
 
 ---
 
+What makes it different?
+Roof|control combines headphone correction, crossfeed with adjustable ITD, and mix translation emulation into a single lightweight JSFX chain designed specifically for REAPER monitoring FX.
+
 ## Main Modules
 
 ### 1. Speaker Emulation Module
@@ -64,7 +67,7 @@ Based on the well-known BS2B project, but with one significant modification. The
     5. Gradually increase the **ITD** to open up the soundstage.
     * *My sweet spot: cutoff 800, suppression 6 dB, ITD 0.12 ms.*
 
-## Known Features
+## Technical Notes
 * File operations require the `roof_bubrik.lua` script to be running.
 * Global Synchronization (gmem):
 The plugin is designed to function as a single, unified monitoring hub. Because of the external control system (which allows you to switch modes via toolbar buttons or scripts), all instances of the plugin will stay synchronized. You only need one copy of the plugin in your Monitoring FX chain to control your entire setup.
@@ -96,7 +99,7 @@ graph TD
         TS2[ITD Delay]
     end
 
-    subgraph Correction ["🎧 Phones Correction "]
+    subgraph Correction ["🎧 Headphone Correction "]
         direction TB
         C1[Biquad Filter Stack]
         C2[Profile Gain]
