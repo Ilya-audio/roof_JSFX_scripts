@@ -25,8 +25,8 @@ Lets you quickly check your mix across various playback systems:
 * **Main Monitors** – Transparent mode with no processing. This is the primary mode for mixing.
 * **Cubes** – Custom emulation of the famous Auratone "mix cubes."
 * **Vinyl** – A faithful recreation of the mode found in AirWindows Monitoring 3.
-* **Smartphone** – Mobile speaker simulation (based on Monitoring 3).
-* **SLEW** – (The mysterious device on the right side of the desk) A detector for "fast" events in the mix. Great for identifying transient-related issues.
+* **Smartphone** – Mobile speaker simulation (from Monitoring 3).
+* **SLEW** – (The mysterious device on the right side of the desk) A detector for "fast" events in the mix. Great for identifying transient-related issues (from Monitoring 3).
 * **Subwoofer** – A recreation of the Monitoring 3 mode for checking low-end conflicts.
 * **Fullrange** – A custom mode I built by combining modes 1 and 6 (activated by clicking on the central control deck). It mimics the feel of home theaters or club systems.
 
@@ -138,6 +138,16 @@ graph TD
     style Correction fill:none,stroke:#008000
     style HG fill:none,stroke:#e65100
 ```
+---
+## Credits & Inspirations
+
+Roof|control is built upon the foundation of several incredible open-source projects. Deep respect to the authors for their contribution to the audio community:
+
+* **BS2B (Bauer stereophonic-to-binaural DSP)** — Boris Mikhailov  
+  The core crossfeed approach used as the foundation for the True-Stereo processing section.
+
+* **Airwindows Monitoring 3** — Chris Johnson  
+  Conceptual and algorithmic inspiration for the Vinyl, Smartphone, Subwoofer, and SLEW translation modes.
 
 ---
 **P.S. Why the name "roof_bubrik"?**
