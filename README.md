@@ -127,7 +127,7 @@ graph TD
     C2 --> HG
     
     %% Ветка Байпаса (пунктиром) тоже идет в Headroom Gain
-    Input -.->|Bypass Path| HG
+    Input -.->|Internal Bypass| HG
 
     %% Финал
     HG --> Output
