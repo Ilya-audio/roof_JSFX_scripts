@@ -1,7 +1,7 @@
 /**
  * JSFX Name: roof_control
  * Author: Ilya Kuznetsov
- * Version: 0.9
+ * Version: 0.93
  * License: MIT
  * * Description: Headphone correction and mix-checking tool.
  * Includes algorithms from:
@@ -247,7 +247,7 @@ cf_delay_frac = cf_delay_spl - cf_delay_int;
 );
 
 update_params();
-setup_biquad_to_mem(mem_fullrange_f, 0, 230, 0, 0.707, 3); // HPF for fullrange
+setup_biquad_to_mem(mem_fullrange_f, 0, 225, 0, 0.707, 3); // HPF for fullrange
 
 @slider
 slider6 != last_cf_cutoff || slider7 != last_cf_sup || slider5 != last_cf_state ? ( 
@@ -293,7 +293,17 @@ hp_need_reload ? (
     while(file_string(f_db, #line) > 0) (
       i == slider8 ? (
         strcpy(#current_fn, #line);
-        str_setchar(#current_fn, strlen(#current_fn)-1, 0); 
+        
+        // --- УМНАЯ ОЧИСТКА ПЕРЕНОСОВ СТРОК (\r, \n) ---
+        _len = strlen(#current_fn);
+        while(_len > 0 && (
+          str_getchar(#current_fn, _len-1) == 10 || // \n
+          str_getchar(#current_fn, _len-1) == 13    // \r
+        )) (
+          _len -= 1;
+          str_setchar(#current_fn, _len, 0);
+        );
+        // ----------------------------------------------
       );
       i += 1;
     );
@@ -302,33 +312,47 @@ hp_need_reload ? (
   );
 
   strlen(#current_fn) > 0 ? (
-    // --- НОВАЯ ЛОГИКА ИМЕНИ ---
-    strcpy(#hp_preset_name, #current_fn); // Копируем имя файла
+    // --- ОТОБРАЖАЕМОЕ ИМЯ (БЕЗ РАСШИРЕНИЯ) ---
+    strcpy(#hp_preset_name, #current_fn);
     _dot_pos = -1;
     _i = 0;
-    _len = strlen(#hp_preset_name);
-    loop(_len,
+    _p_len = strlen(#hp_preset_name);
+    loop(_p_len,
       str_getchar(#hp_preset_name, _i) == '.' ? _dot_pos = _i;
       _i += 1;
     );
-    _dot_pos >= 0 ? str_setchar(#hp_preset_name, _dot_pos, 0); // Обрезаем на точке
-    // --------------------------
+    _dot_pos >= 0 ? str_setchar(#hp_preset_name, _dot_pos, 0);
+    // ------------------------------------------
 
     #full_path = "roof_control/phones_eq/";
     strcat(#full_path, #current_fn);
+    
     f_hp = file_open(#full_path);
     f_hp > 0 ? (
-      #clear = '';
-      while(file_string(f_hp, #clear) > 0) (
-        match("*Preamp: %f*", #clear, slider11);
-        match("*PK*Fc %f*Gain %f*Q %f*", #clear, f, g, q) ? ( setup_biquad_to_mem(mem_hp_f, hp_num_filters, f, g, q, 0); hp_num_filters += 1; ) :
-        match("*LSC*Fc %f*Gain %f*Q %f*", #clear, f, g, q) ? ( setup_biquad_to_mem(mem_hp_f, hp_num_filters, f, g, q, 1); hp_num_filters += 1; ) :
-        match("*HSC*Fc %f*Gain %f*Q %f*", #clear, f, g, q) ? ( setup_biquad_to_mem(mem_hp_f, hp_num_filters, f, g, q, 2); hp_num_filters += 1; );
+      while(file_string(f_hp, #line_hp) > 0) (
+        match("*Preamp: %f*", #line_hp, slider11) ? (
+          p_gain = slider11;
+        );
+        match("*PK*Fc %f*Gain %f*Q %f*", #line_hp, f, g, q) ? ( 
+          setup_biquad_to_mem(mem_hp_f, hp_num_filters, f, g, q, 0); 
+          hp_num_filters += 1; 
+        ) :
+        match("*LSC*Fc %f*Gain %f*Q %f*", #line_hp, f, g, q) ? ( 
+          setup_biquad_to_mem(mem_hp_f, hp_num_filters, f, g, q, 1); 
+          hp_num_filters += 1; 
+        ) :
+        match("*HSC*Fc %f*Gain %f*Q %f*", #line_hp, f, g, q) ? ( 
+          setup_biquad_to_mem(mem_hp_f, hp_num_filters, f, g, q, 2); 
+          hp_num_filters += 1; 
+        );
       );
       file_close(f_hp);
-      p_gain = slider11;
-    ) : ( #hp_preset_name = " Err: File missing "; );
-  ) : ( #hp_preset_name = " No Preset "; );
+    ) : ( 
+      #hp_preset_name = " Err: File missing "; 
+    );
+  ) : ( 
+    #hp_preset_name = " No Preset "; 
+  );
 );
 
 @sample
